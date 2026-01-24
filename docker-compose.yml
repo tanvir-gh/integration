@@ -59,41 +59,38 @@ services:
       retries: 5
       start_period: 30s
 
-  content-service:
+  catalog-service:
     build:
-      context: ./content-service
+      context: ./catalog-service
       dockerfile: Dockerfile
-    container_name: content-service
+    container_name: catalog-service
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/entertainment?currentSchema=content_db
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/entertainment?currentSchema=catalog_db
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
-      SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
       NEW_RELIC_ACCOUNT_ID: ${NEW_RELIC_ACCOUNT_ID:-}
-      NEW_RELIC_APP_NAME: content-service
+      NEW_RELIC_APP_NAME: catalog-service
     ports:
       - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
-      kafka:
-        condition: service_healthy
 
-  recommendation-service:
+  watch-history-service:
     build:
-      context: ./recommendation-service
+      context: ./watch-history-service
       dockerfile: Dockerfile
-    container_name: recommendation-service
+    container_name: watch-history-service
     environment:
-      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/entertainment?currentSchema=recommendation_db
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/entertainment?currentSchema=watch_history_db
       SPRING_DATASOURCE_USERNAME: postgres
       SPRING_DATASOURCE_PASSWORD: postgres
       SPRING_KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      CONTENT_SERVICE_URL: http://content-service:8080
+      CATALOG_SERVICE_URL: http://catalog-service:8080
       NEW_RELIC_LICENSE_KEY: ${NEW_RELIC_LICENSE_KEY:-}
       NEW_RELIC_ACCOUNT_ID: ${NEW_RELIC_ACCOUNT_ID:-}
-      NEW_RELIC_APP_NAME: recommendation-service
+      NEW_RELIC_APP_NAME: watch-history-service
     ports:
       - "8081:8081"
     depends_on:
@@ -101,7 +98,7 @@ services:
         condition: service_healthy
       kafka:
         condition: service_healthy
-      content-service:
+      catalog-service:
         condition: service_started
 
 volumes:

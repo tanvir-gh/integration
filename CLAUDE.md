@@ -4,15 +4,15 @@
 
 This is a Spring Boot microservices project demonstrating integration patterns between two services in the entertainment domain:
 
-- **content-service** (port 8080): Manages entertainment content (movies, shows)
-- **recommendation-service** (port 8081): Provides recommendations based on content events
+- **catalog-service** (port 8080): Source of truth for content metadata (movies, series)
+- **watch-history-service** (port 8081): Tracks user viewing activity
 
 ## Technology Stack
 
 - **Language**: Java 21
 - **Framework**: Spring Boot 3.5.8
 - **Build Tool**: Gradle 9.3.0 (Groovy DSL)
-- **Database**: PostgreSQL (shared instance, separate schemas: `content_db`, `recommendation_db`)
+- **Database**: PostgreSQL (shared instance, separate schemas: `catalog_db`, `watch_history_db`)
 - **Messaging**: Apache Kafka
 - **Containerization**: Docker Compose
 - **Testing**: JUnit 5, Testcontainers, Awaitility
@@ -24,55 +24,52 @@ This is a Spring Boot microservices project demonstrating integration patterns b
 integration/
 ├── docker-compose.yml          # Orchestrates all services
 ├── init-db.sql                 # Database schema initialization
-├── test-api.sh                 # API testing and trace generation script
 ├── .env.example                # Environment variables template
-├── content-service/
+├── catalog-service/
 │   ├── build.gradle
 │   ├── Dockerfile
 │   ├── newrelic/newrelic.yml
-│   └── src/main/java/com/entertainment/content/
+│   └── src/main/java/com/entertainment/catalog/
 │       ├── controller/         # REST endpoints
 │       ├── service/            # Business logic
 │       ├── repository/         # JPA repositories
-│       ├── domain/             # Entity classes
-│       ├── event/              # Kafka event DTOs
-│       └── kafka/              # Kafka producer
-└── recommendation-service/
+│       └── domain/             # Entity classes
+└── watch-history-service/
     ├── build.gradle
     ├── Dockerfile
     ├── newrelic/newrelic.yml
-    └── src/main/java/com/entertainment/recommendation/
+    └── src/main/java/com/entertainment/watchhistory/
         ├── controller/         # REST endpoints
         ├── service/            # Business logic
         ├── repository/         # JPA repositories
         ├── domain/             # Entity classes
-        ├── client/             # HTTP client for content-service
-        └── kafka/              # Kafka consumer
+        ├── client/             # HTTP client for catalog-service
+        ├── event/              # Kafka event DTOs
+        └── kafka/              # Kafka producer
 ```
 
 ## Integration Patterns
 
 ### Asynchronous (Kafka)
-- **Topic**: `content-events`
-- **Flow**: content-service publishes `ContentCreatedEvent` when content is created
-- **Consumer**: recommendation-service listens and stores content references
+- **Topic**: `watch-events`
+- **Flow**: watch-history-service publishes `WatchEvent` when user watches content
+- **Purpose**: Fire-and-forget event publishing for analytics/downstream consumers
 
 ### Synchronous (HTTP)
-- recommendation-service calls content-service via `RestClient` to fetch content details
-- Base URL configured via `content-service.url` property
+- watch-history-service calls catalog-service via `RestClient` to fetch content details
+- Base URL configured via `catalog-service.url` property
+- Batch endpoint for efficient fetching: `GET /api/catalog/batch?ids=1,2,3`
 
 ## Build Commands
 
 ```bash
 # Build both services
-./gradlew build
-
-# Build specific service
-cd content-service && ./gradlew build
-cd recommendation-service && ./gradlew build
+cd catalog-service && ./gradlew build
+cd watch-history-service && ./gradlew build
 
 # Run tests
-./gradlew test
+cd catalog-service && ./gradlew test
+cd watch-history-service && ./gradlew test
 ```
 
 ## Running the Application
@@ -85,7 +82,7 @@ docker-compose up -d postgres kafka
 docker-compose up -d
 
 # View logs
-docker-compose logs -f content-service recommendation-service
+docker-compose logs -f catalog-service watch-history-service
 ```
 
 ## Testing
@@ -93,35 +90,90 @@ docker-compose logs -f content-service recommendation-service
 ### Integration Tests
 Both services use Testcontainers for integration testing:
 - PostgreSQL container for database tests
-- Kafka container for messaging tests
+- Kafka container for messaging tests (watch-history-service)
 - Awaitility for async operation verification
 
 ### API Testing
 ```bash
-# Run the test script (generates traces)
-./test-api.sh 10
-
-# Manual testing
-curl -X POST http://localhost:8080/api/content \
+# Add content to catalog
+curl -X POST http://localhost:8080/api/catalog \
   -H "Content-Type: application/json" \
-  -d '{"title":"The Matrix","type":"MOVIE"}'
+  -d '{"title":"Inception","type":"MOVIE","durationMinutes":148,"genre":"ACTION"}'
 
-curl http://localhost:8081/api/recommendations
+# Record a watch event (publishes to Kafka)
+curl -X POST http://localhost:8081/api/watch \
+  -H "Content-Type: application/json" \
+  -d '{"visitorId":"visitor-123","contentId":1,"watchedSeconds":3600}'
+
+# Get watch history (calls catalog via HTTP)
+curl http://localhost:8081/api/history/visitor-123
 ```
 
 ## API Endpoints
 
-### Content Service (port 8080)
-- `POST /api/content` - Create content (publishes Kafka event)
-- `GET /api/content/{id}` - Get content by ID
-- `GET /api/content` - List all content
+### Catalog Service (port 8080)
+- `POST /api/catalog` - Add content to catalog
+- `GET /api/catalog/{id}` - Get content by ID
+- `GET /api/catalog` - List all content
+- `GET /api/catalog/batch?ids=1,2,3` - Batch fetch content by IDs
 - `GET /actuator/health` - Health check
 - `GET /actuator/prometheus` - Prometheus metrics
 
-### Recommendation Service (port 8081)
-- `GET /api/recommendations` - Get recommendations (calls content-service)
+### Watch History Service (port 8081)
+- `POST /api/watch` - Record a watch event (publishes to Kafka)
+- `GET /api/history/{visitorId}` - Get watch history for visitor (calls catalog via HTTP)
 - `GET /actuator/health` - Health check
 - `GET /actuator/prometheus` - Prometheus metrics
+
+## Domain Models
+
+### Content (catalog-service)
+```java
+@Entity
+@Table(name = "content", schema = "catalog_db")
+public class Content {
+    Long id;
+    String title;
+    ContentType type;        // MOVIE, SERIES
+    Integer durationMinutes; // Runtime for movies, avg episode length for series
+    String genre;            // ACTION, COMEDY, DRAMA, etc.
+    LocalDateTime publishedAt;
+}
+```
+
+### WatchRecord (watch-history-service)
+```java
+@Entity
+@Table(name = "watch_record", schema = "watch_history_db")
+public class WatchRecord {
+    Long id;
+    String visitorId;        // Anonymous visitor identifier
+    Long contentId;          // Reference to catalog content
+    Integer watchedSeconds;  // How long they watched
+    LocalDateTime watchedAt;
+}
+```
+
+## Integration Flow
+
+```
+1. User watches content:
+   POST /api/watch {visitorId: "v123", contentId: 1, watchedSeconds: 3600}
+
+2. watch-history-service:
+   - Saves WatchRecord to database
+   - Publishes WatchEvent to Kafka (fire-and-forget)
+   - Returns success
+
+3. User views their history:
+   GET /api/history/v123
+
+4. watch-history-service:
+   - Fetches WatchRecords from database
+   - Calls catalog-service HTTP: GET /api/catalog/batch?ids=1,2,3
+   - Merges content details with watch records
+   - Returns enriched history
+```
 
 ## Observability
 
@@ -156,7 +208,7 @@ NEW_RELIC_ACCOUNT_ID=your_account_id_here
 ### Entity Definition
 ```java
 @Entity
-@Table(name = "content", schema = "content_db")
+@Table(name = "content", schema = "catalog_db")
 @Data @NoArgsConstructor @AllArgsConstructor @Builder
 public class Content {
     @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -164,59 +216,57 @@ public class Content {
     private String title;
     @Enumerated(EnumType.STRING)
     private ContentType type;
-    private LocalDateTime createdAt;
+    private Integer durationMinutes;
+    private String genre;
+    private LocalDateTime publishedAt;
 }
 ```
 
 ### Kafka Producer
 ```java
-@Service
+@Component
 @RequiredArgsConstructor
-public class ContentEventProducer {
+public class WatchEventProducer {
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final ObjectMapper objectMapper;
 
-    public void sendContentCreatedEvent(ContentCreatedEvent event) {
-        kafkaTemplate.send("content-events", objectMapper.writeValueAsString(event));
-    }
-}
-```
-
-### Kafka Consumer
-```java
-@Service
-@RequiredArgsConstructor
-public class ContentEventConsumer {
-    @KafkaListener(topics = "content-events", groupId = "recommendation-service")
-    public void handleContentCreated(String message) {
-        // Process event
+    public void publishWatchEvent(WatchRecord watchRecord) {
+        WatchEvent event = WatchEvent.builder()
+                .visitorId(watchRecord.getVisitorId())
+                .contentId(watchRecord.getContentId())
+                .watchedSeconds(watchRecord.getWatchedSeconds())
+                .timestamp(LocalDateTime.now())
+                .build();
+        kafkaTemplate.send("watch-events", watchRecord.getVisitorId(),
+                objectMapper.writeValueAsString(event));
     }
 }
 ```
 
 ### HTTP Client (RestClient)
 ```java
-@Service
-public class ContentServiceClient {
+@Component
+public class CatalogServiceClient {
     private final RestClient restClient;
 
-    public ContentServiceClient(@Value("${content-service.url}") String baseUrl) {
+    public CatalogServiceClient(@Value("${catalog-service.url}") String baseUrl) {
         this.restClient = RestClient.builder().baseUrl(baseUrl).build();
     }
 
-    public ContentDto getContent(Long id) {
+    public List<ContentResponse> getContentBatch(List<Long> ids) {
+        String idsParam = ids.stream().map(String::valueOf).collect(Collectors.joining(","));
         return restClient.get()
-            .uri("/api/content/{id}", id)
-            .retrieve()
-            .body(ContentDto.class);
+                .uri("/api/catalog/batch?ids={ids}", idsParam)
+                .retrieve()
+                .body(new ParameterizedTypeReference<>() {});
     }
 }
 ```
 
 ## Database Schemas
 
-- `content_db`: Used by content-service
-- `recommendation_db`: Used by recommendation-service
+- `catalog_db`: Used by catalog-service
+- `watch_history_db`: Used by watch-history-service
 
 Both schemas are created automatically via `init-db.sql` when PostgreSQL starts.
 
