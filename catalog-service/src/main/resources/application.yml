@@ -17,6 +17,11 @@ spring:
       hibernate:
         format_sql: true
         default_schema: catalog_db
+        cache:
+          use_second_level_cache: true
+          region:
+            factory_class: com.hazelcast.hibernate.HazelcastCacheRegionFactory
+        generate_statistics: true
 
 management:
   endpoints:
@@ -30,6 +35,15 @@ management:
     tags:
       application: ${spring.application.name}
 
+hazelcast:
+  metrics:
+    enabled: true
+    micrometer:
+      enabled: true
+
 logging:
   level:
     com.entertainment.catalog: DEBUG
+    org.hibernate.SQL: DEBUG
+    org.hibernate.cache: DEBUG
+    com.hazelcast: INFO

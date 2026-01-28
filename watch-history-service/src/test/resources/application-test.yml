@@ -7,6 +7,8 @@ spring:
       hibernate:
         format_sql: true
         default_schema: watch_history_db
+        cache:
+          use_second_level_cache: false
   kafka:
     producer:
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
